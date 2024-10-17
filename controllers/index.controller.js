@@ -81,7 +81,7 @@ function createUser(req, res) {
   res.status(201).json({ message: `User ${userId} created` });
 }
 
-function createStock(req, res) {
+function createSymbol(req, res) {
   const { symbolName } = req.params;
   if (!symbolName) {
     return res.status(400).json({ message: "Symbol name is required" });
@@ -405,6 +405,19 @@ function initialiseUserBalances(userId) {
   }
 }
 
+function viewIndividualOrderbook(stockSymbol) {
+  const { stockSymbol } = req.params;
+  const orderbook = ORDERBOOK[stockSymbol];
+
+  if (!orderbook) {
+    return res
+      .status(404)
+      .json({ error: "Orderbook with provided stock symbol not found" });
+  }
+
+  return res.json(orderbook);
+}
+
 function updateOrderbook(stockSymbol, side, price, quantity, userId) {
   if (!ORDERBOOK[stockSymbol]) {
     ORDERBOOK[stockSymbol] = { yes: {}, no: {} };
@@ -520,7 +533,7 @@ module.exports = {
   apiTest,
   resetData,
   createUser,
-  createStock,
+  createSymbol,
   getINRBalance,
   getStockBalance,
   onrampINR,
@@ -529,5 +542,6 @@ module.exports = {
   viewOrderbook,
   cancelOrder,
   mintTokens,
-  initialiseDummyData
+  viewIndividualOrderbook,
+  initialiseDummyData,
 };
