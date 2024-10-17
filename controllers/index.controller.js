@@ -405,7 +405,7 @@ function initialiseUserBalances(userId) {
   }
 }
 
-function viewIndividualOrderbook(stockSymbol) {
+function viewIndividualOrderbook(req, res) {
   const { stockSymbol } = req.params;
   const orderbook = ORDERBOOK[stockSymbol];
 
