@@ -68,6 +68,11 @@ function apiTest(req, res) {
   res.status(200).json({ message: "API is up and running" });
 }
 
+function isValidPrice(price) {
+  const decimalPrice = new Decimal(price);
+  return decimalPrice.gte(1) && decimalPrice.lte(10);
+}
+
 function resetData(req, res) {
   INR_BALANCES = {};
   ORDERBOOK = {};
@@ -146,9 +151,11 @@ function buyStock(req, res) {
     !price ||
     !stockType ||
     new Decimal(quantity).lte(0) ||
-    new Decimal(price).lte(0)
+    !isValidPrice(price)
   ) {
-    return res.status(400).json({ message: "Invalid input" });
+    return res
+      .status(400)
+      .json({ message: "Invalid input / Price must be between 1 and 10" });
   }
 
   initialiseUserBalances(userId);
@@ -239,9 +246,11 @@ function placeSellOrder(req, res) {
     !price ||
     !stockType ||
     new Decimal(quantity).lte(0) ||
-    new Decimal(price).lte(0)
+    !isValidPrice(price)
   ) {
-    return res.status(400).json({ message: "Invalid input" });
+    return res
+      .status(400)
+      .json({ message: "Invalid input / Price must be between 1 and 10" });
   }
 
   initialiseUserBalances(userId);
@@ -289,9 +298,11 @@ function cancelOrder(req, res) {
     !price ||
     !stockType ||
     new Decimal(quantity).lte(0) ||
-    new Decimal(price).lte(0)
+    !isValidPrice(price)
   ) {
-    return res.status(400).json({ message: "Invalid input" });
+    return res
+      .status(400)
+      .json({ message: "Invalid input / Price must be between 1 and 10" });
   }
 
   const decimalQuantity = new Decimal(quantity);
@@ -361,9 +372,11 @@ function mintTokens(req, res) {
     !quantity ||
     !price ||
     new Decimal(quantity).lte(0) ||
-    new Decimal(price).lte(0)
+    !isValidPrice(price)
   ) {
-    return res.status(400).json({ message: "Invalid input" });
+    return res
+      .status(400)
+      .json({ message: "Invalid input / Price must be between 1 and 10" });
   }
 
   initialiseUserBalances(userId);
@@ -419,6 +432,9 @@ function viewIndividualOrderbook(req, res) {
 }
 
 function updateOrderbook(stockSymbol, side, price, quantity, userId) {
+  if (!isValidPrice(price)) {
+    throw new Error("Invalid price / Price must be between 1 and 10");
+  }
   if (!ORDERBOOK[stockSymbol]) {
     ORDERBOOK[stockSymbol] = { yes: {}, no: {} };
   }
@@ -439,6 +455,9 @@ function updateOrderbook(stockSymbol, side, price, quantity, userId) {
 }
 
 function executeTrade(stockSymbol, price, quantity, buyerOrders, sellerOrders) {
+  if (!isValidPrice(price)) {
+    throw new Error("Invalid price. Price must be between 1 and 10.");
+  }
   for (const [buyerId, buyQuantity] of Object.entries(buyerOrders)) {
     for (const [sellerId, sellQuantity] of Object.entries(sellerOrders)) {
       const tradeQuantity = Decimal.min(buyQuantity, sellQuantity, quantity);
@@ -488,9 +507,11 @@ function matchOrders(stockSymbol) {
 
   const yesPrices = Object.keys(yesOrders)
     .map((price) => new Decimal(price))
+    .filter(isValidPrice)
     .sort((a, b) => b.minus(a).toNumber());
   const noPrices = Object.keys(noOrders)
     .map((price) => new Decimal(price))
+    .filter(isValidPrice)
     .sort((a, b) => a.minus(b).toNumber());
 
   while (yesPrices.length > 0 && noPrices.length > 0) {
