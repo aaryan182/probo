@@ -1,42 +1,50 @@
 const WebSocket = require("ws");
 const uuid = require("uuid");
-const redisService = require("./redis.service");
 
 class WebSocketService {
   constructor(server) {
     this.wss = new WebSocket.Server({ server });
     this.clients = new Map();
+    this.subscriptions = new Map();
 
     this.wss.on("connection", (ws) => {
       const id = uuid.v4();
       this.clients.set(id, ws);
 
       ws.on("message", (message) => {
-        this.broadcast(message, id);
+        try {
+          const data = JSON.parse(message);
+          if (data.type === "subscribe") {
+            this.handleSubscription(id, ws, data.stockSymbol);
+          }
+        } catch (error) {
+          console.error("WebSocket message error:", error);
+        }
       });
 
       ws.on("close", () => {
         this.clients.delete(id);
+        this.subscriptions.delete(id);
       });
     });
 
     redisService.subscribe("updates", (message) => {
-      this.sendToAll(JSON.stringify(message));
+      this.handleUpdate(message);
     });
   }
 
-  broadcast(message, senderId) {
-    this.clients.forEach((client, id) => {
-      if (id !== senderId && client.readyState === WebSocket.OPEN) {
-        client.send(message);
-      }
-    });
+  handleSubscription(clientId, ws, stockSymbol) {
+    this.subscriptions.set(clientId, stockSymbol);
   }
 
-  sendToAll(message) {
-    this.clients.forEach((client) => {
-      if (client.readyState === WebSocket.OPEN) {
-        client.send(message);
+  handleUpdate(message) {
+    this.clients.forEach((client, clientId) => {
+      if (
+        client.readyState === WebSocket.OPEN &&
+        (!message.stockSymbol ||
+          this.subscriptions.get(clientId) === message.stockSymbol)
+      ) {
+        client.send(JSON.stringify(message));
       }
     });
   }

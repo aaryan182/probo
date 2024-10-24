@@ -21,4 +21,4 @@ server.listen(port, () => {
   console.log(`Options trading app listening at http://localhost:${port}`);
 });
 
-module.exports = { app, webSocketService , redisService };
+module.exports = { app, webSocketService, redisService };

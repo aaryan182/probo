@@ -6,16 +6,24 @@ function ensureDecimal(value) {
   return value instanceof Decimal ? value : new Decimal(value);
 }
 
+function scalePrice(price) {
+  return parseInt(price) / 100;
+}
+
+function unscalePrice(price) {
+  return parseInt(parseFloat(price) * 100);
+}
+
 function isValidPrice(price) {
   return price.gte(1) && price.lte(10);
 }
 
 async function apiTest(req, res) {
   try {
-    res.status(200).json({ message: "API is up and running" });
+    res.status(200).json({ msg: "API is up and running" });
   } catch (error) {
     console.error("API test error:", error);
-    res.status(500).json({ message: "Internal server error" });
+    res.status(500).json({ msg: "Internal server error" });
   }
 }
 
@@ -25,26 +33,26 @@ async function resetData(req, res) {
     await redisService.hdel("orderbook", "all");
     await redisService.hdel("stockBalances", "all");
     await initialiseDummyData();
-    res.status(200).json({ message: "Data reset successfully" });
+    res.status(200).json({ msg: "Data reset successfully" });
     redisService.publish("updates", { event: "dataReset" });
   } catch (error) {
     console.error("Reset data error:", error);
-    res.status(500).json({ message: "Failed to reset data" });
+    res.status(500).json({ msg: "Failed to reset data" });
   }
 }
 
 async function createUser(req, res) {
   try {
-    const userId = uuid.v4();
+    const userId = req.params.userId || uuid.v4();
     await redisService.hset("users", userId, {
-      balance: "0",
-      locked: "0",
+      balance: 0,
+      locked: 0,
     });
-    res.status(201).json({ message: `User ${userId} created`, userId });
+    res.status(201).json({ msg: `User ${userId} created`, userId });
     redisService.publish("updates", { event: "userCreated", userId });
   } catch (error) {
     console.error("Create user error:", error);
-    res.status(500).json({ message: "Failed to create user" });
+    res.status(500).json({ msg: "Failed to create user" });
   }
 }
 
@@ -52,18 +60,18 @@ async function createSymbol(req, res) {
   const { symbolName } = req.params;
   try {
     if (!symbolName) {
-      return res.status(400).json({ message: "Symbol name is required" });
+      return res.status(400).json({ msg: "Symbol name is required" });
     }
     const orderbook = await redisService.hget("orderbook", symbolName);
     if (orderbook) {
-      return res.status(409).json({ message: "Symbol already exists" });
+      return res.status(409).json({ msg: "Symbol already exists" });
     }
     await redisService.hset("orderbook", symbolName, { yes: {}, no: {} });
-    res.status(201).json({ message: `Symbol ${symbolName} created` });
+    res.status(201).json({ msg: { yes: {}, no: {} } });
     redisService.publish("updates", { event: "symbolCreated", symbolName });
   } catch (error) {
     console.error("Create symbol error:", error);
-    res.status(500).json({ message: "Failed to create symbol" });
+    res.status(500).json({ msg: "Failed to create symbol" });
   }
 }
 
@@ -73,17 +81,17 @@ async function getINRBalance(req, res) {
     if (userId) {
       const userBalance = await redisService.hget("users", userId);
       if (userBalance) {
-        res.json({ [userId]: userBalance });
+        res.json({ msg: userBalance });
       } else {
-        res.status(404).json({ message: "User not found" });
+        res.status(404).json({ msg: "User not found" });
       }
     } else {
       const users = await redisService.hgetall("users");
-      res.json(users || {});
+      res.json({ msg: users || {} });
     }
   } catch (error) {
     console.error("Get INR balance error:", error);
-    res.status(500).json({ message: "Failed to retrieve INR balance" });
+    res.status(500).json({ msg: "Failed to retrieve INR balance" });
   }
 }
 
@@ -92,34 +100,32 @@ async function getStockBalance(req, res) {
   try {
     const stockBalances = await redisService.hgetall("stockBalances");
     if (userId) {
-      res.json({ [userId]: stockBalances[userId] || {} });
+      res.json({ msg: stockBalances[userId] || {} });
     } else {
-      res.json(stockBalances || {});
+      res.json({ msg: stockBalances || {} });
     }
   } catch (error) {
     console.error("Get stock balance error:", error);
-    res.status(500).json({ message: "Failed to retrieve stock balance" });
+    res.status(500).json({ msg: "Failed to retrieve stock balance" });
   }
 }
 
 async function onrampINR(req, res) {
   const { userId, amount } = req.body;
   try {
-    if (!userId || !amount || isNaN(amount) || ensureDecimal(amount).lte(0)) {
-      return res.status(400).json({ message: "Invalid input" });
+    if (!userId || !amount || isNaN(amount) || parseInt(amount) <= 0) {
+      return res.status(400).json({ msg: "Invalid input" });
     }
 
     const userBalance = await redisService.hget("users", userId);
     if (!userBalance) {
-      return res.status(404).json({ message: "User not found" });
+      return res.status(404).json({ msg: "User not found" });
     }
 
-    userBalance.balance = ensureDecimal(userBalance.balance)
-      .plus(ensureDecimal(amount))
-      .toString();
+    userBalance.balance = parseInt(userBalance.balance) + parseInt(amount);
     await redisService.hset("users", userId, userBalance);
 
-    res.json({ message: `Onramped ${userId} with amount ${amount}` });
+    res.json({ msg: `Onramped ${userId} with amount ${amount}` });
     redisService.publish("updates", {
       event: "balanceUpdated",
       userId,
@@ -127,7 +133,7 @@ async function onrampINR(req, res) {
     });
   } catch (error) {
     console.error("Onramp INR error:", error);
-    res.status(500).json({ message: "Failed to onramp INR" });
+    res.status(500).json({ msg: "Failed to onramp INR" });
   }
 }
 
@@ -138,7 +144,8 @@ async function buyStock(req, res) {
     await checkStockSymbolExists(stockSymbol);
 
     const decimalPrice = ensureDecimal(price);
-    const totalCost = quantity.times(decimalPrice);
+    const scaledPrice = scalePrice(decimalPrice);
+    const totalCost = ensureDecimal(quantity).times(decimalPrice);
 
     await checkSufficientBalance(userId, totalCost);
 
@@ -150,17 +157,15 @@ async function buyStock(req, res) {
     const oppositeType = stockType === "yes" ? "no" : "yes";
     const sellOrders = orderbook[oppositeType];
     const sellPrices = Object.keys(sellOrders)
-      .map((price) => ensureDecimal(price))
-      .sort((a, b) => a.minus(b).toNumber());
+      .map(Number)
+      .sort((a, b) => a - b);
 
     let remainingQuantity = quantity;
-    let totalSpent = ensureDecimal(0);
+    let totalSpent = 0;
 
     for (const sellPrice of sellPrices) {
-      if (sellPrice.gt(decimalPrice)) break;
-      const availableQuantity = parseInt(
-        sellOrders[sellPrice.toString()].total
-      );
+      if (sellPrice > scaledPrice) break;
+      const availableQuantity = parseInt(sellOrders[sellPrice].total);
       const matchedQuantity = Math.min(remainingQuantity, availableQuantity);
 
       await executeTrade(
@@ -168,42 +173,32 @@ async function buyStock(req, res) {
         sellPrice,
         matchedQuantity,
         { [userId]: matchedQuantity },
-        sellOrders[sellPrice.toString()].orders
+        sellOrders[sellPrice].orders
       );
 
       remainingQuantity -= matchedQuantity;
-      totalSpent = totalSpent.plus(
-        ensureDecimal(matchedQuantity).times(sellPrice)
-      );
+      totalSpent += matchedQuantity * unscalePrice(sellPrice);
 
       if (remainingQuantity === 0) break;
     }
-
     if (remainingQuantity > 0) {
       await placePendingBuyOrder(
         stockSymbol,
         stockType,
-        decimalPrice,
+        scaledPrice,
         remainingQuantity,
-        userId
+        userId,
+        "reverted"
       );
     }
 
     await matchOrders(stockSymbol);
 
-    res.json({ message: "Buy order placed and matching attempted" });
-    redisService.publish("updates", {
-      event: "orderPlaced",
-      type: "buy",
-      userId,
-      stockSymbol,
-      quantity: quantity.toString(),
-      price: decimalPrice.toString(),
-      stockType,
-    });
+    res.json({ msg: "Buy order placed and matching attempted" });
+    publishOrderUpdate(stockSymbol, stockType, userId, quantity, price);
   } catch (error) {
     console.error("Buy stock error:", error);
-    res.status(400).json({ message: error.message });
+    res.status(400).json({ msg: error.message });
   }
 }
 
@@ -212,49 +207,72 @@ async function placeSellOrder(req, res) {
   try {
     await validateInput(userId, stockSymbol, quantity, price, stockType);
 
-    const decimalQuantity = ensureDecimal(quantity);
     const decimalPrice = ensureDecimal(price);
+    const scaledPrice = scalePrice(decimalPrice);
 
-    await checkSufficientStockBalance(
-      userId,
-      stockSymbol,
-      stockType,
-      decimalQuantity
-    );
+    await checkSufficientStockBalance(userId, stockSymbol, stockType, quantity);
 
     await placePendingSellOrder(
       stockSymbol,
       stockType,
-      decimalPrice,
-      decimalQuantity,
-      userId
+      scaledPrice,
+      quantity,
+      userId,
+      "sell"
     );
 
     await matchOrders(stockSymbol);
 
-    res.json({ message: "Sell order placed and matching attempted" });
-    redisService.publish("updates", {
-      event: "orderPlaced",
-      type: "sell",
-      userId,
-      stockSymbol,
-      quantity: decimalQuantity.toString(),
-      price: decimalPrice.toString(),
-      stockType,
-    });
+    res.json({ msg: "Sell order placed and matching attempted" });
+    publishOrderUpdate(stockSymbol, stockType, userId, quantity, price);
   } catch (error) {
     console.error("Place sell order error:", error);
-    res.status(400).json({ message: error.message });
+    res.status(400).json({ msg: error.message });
+  }
+}
+
+async function mintTokens(req, res) {
+  const { userId, stockSymbol, quantity } = req.body;
+  const price = 100;
+  try {
+    await validateMintTokensInput(userId, stockSymbol, quantity);
+
+    const totalCost = quantity * price;
+    await checkSufficientBalance(userId, totalCost);
+
+    await updateBalancesAfterMinting(userId, stockSymbol, quantity, totalCost);
+
+    res.json({
+      msg: `Minted ${quantity} 'yes' and 'no' tokens for user ${userId}`,
+    });
+    publishMintUpdate(userId, stockSymbol, quantity, price);
+  } catch (error) {
+    console.error("Mint tokens error:", error);
+    res.status(400).json({ msg: error.message });
   }
 }
 
 async function viewOrderbook(req, res) {
   try {
     const orderbook = await redisService.hgetall("orderbook");
-    res.json(orderbook || {});
+    res.json({ msg: orderbook || {} });
   } catch (error) {
     console.error("View orderbook error:", error);
-    res.status(500).json({ message: "Failed to retrieve orderbook" });
+    res.status(500).json({ msg: "Failed to retrieve orderbook" });
+  }
+}
+
+async function viewIndividualOrderbook(req, res) {
+  const { stockSymbol } = req.params;
+  try {
+    const orderbook = await redisService.hget("orderbook", stockSymbol);
+    if (!orderbook) {
+      return res.status(404).json({ msg: "Orderbook not found" });
+    }
+    res.json({ msg: orderbook });
+  } catch (error) {
+    console.error("View individual orderbook error:", error);
+    res.status(500).json({ msg: "Failed to retrieve individual orderbook" });
   }
 }
 
@@ -262,190 +280,21 @@ async function cancelOrder(req, res) {
   const { userId, stockSymbol, quantity, price, stockType } = req.body;
   try {
     await validateInput(userId, stockSymbol, quantity, price, stockType);
+    const scaledPrice = scalePrice(price);
 
-    const decimalQuantity = ensureDecimal(quantity);
-    const decimalPrice = ensureDecimal(price);
-
-    const orderbook = await redisService.hget("orderbook", stockSymbol);
-    if (
-      !orderbook ||
-      !orderbook[stockType][decimalPrice.toString()] ||
-      !orderbook[stockType][decimalPrice.toString()].orders[userId]
-    ) {
-      throw new Error("Order not found");
-    }
-
-    const cancelQuantity = Decimal.min(
-      decimalQuantity,
-      ensureDecimal(
-        orderbook[stockType][decimalPrice.toString()].orders[userId]
-      )
-    );
-
-    await updateOrderbookAfterCancel(
+    await cancelExistingOrder(
       stockSymbol,
       stockType,
-      decimalPrice,
-      cancelQuantity,
+      scaledPrice,
+      quantity,
       userId
     );
-    await updateBalancesAfterCancel(
-      userId,
-      stockSymbol,
-      stockType,
-      decimalPrice,
-      cancelQuantity
-    );
 
-    res.json({ message: `${stockType} order canceled` });
-    redisService.publish("updates", {
-      event: "orderCanceled",
-      userId,
-      stockSymbol,
-      quantity: cancelQuantity.toString(),
-      price: decimalPrice.toString(),
-      stockType,
-    });
+    res.json({ msg: "Order canceled successfully" });
+    publishCancelUpdate(userId, stockSymbol, quantity, price, stockType);
   } catch (error) {
     console.error("Cancel order error:", error);
-    res.status(400).json({ message: error.message });
-  }
-}
-
-async function mintTokens(req, res) {
-  const { userId, stockSymbol, quantity, price } = req.body;
-  try {
-    await validateMintTokensInput(userId, stockSymbol, quantity, price);
-
-    const decimalQuantity = ensureDecimal(quantity);
-    const decimalPrice = ensureDecimal(price);
-    const totalCost = decimalQuantity.times(decimalPrice);
-
-    await checkSufficientBalance(userId, totalCost);
-
-    await updateBalancesAfterMinting(
-      userId,
-      stockSymbol,
-      decimalQuantity,
-      totalCost
-    );
-
-    res.json({
-      message: `Minted ${quantity} 'yes' and 'no' tokens for user ${userId}`,
-    });
-    redisService.publish("updates", {
-      event: "tokensMinted",
-      userId,
-      stockSymbol,
-      quantity: decimalQuantity.toString(),
-      price: decimalPrice.toString(),
-    });
-  } catch (error) {
-    console.error("Mint tokens error:", error);
-    res.status(400).json({ message: error.message });
-  }
-}
-
-async function viewIndividualOrderbook(req, res) {
-  const { stockSymbol } = req.params;
-  try {
-    const individualOrderbook = await redisService.hget(
-      "orderbook",
-      stockSymbol
-    );
-
-    if (!individualOrderbook) {
-      return res
-        .status(404)
-        .json({ error: "Orderbook with provided stock symbol not found" });
-    }
-
-    return res.json(individualOrderbook);
-  } catch (error) {
-    console.error("View individual orderbook error:", error);
-    res
-      .status(500)
-      .json({ message: "Failed to retrieve individual orderbook" });
-  }
-}
-
-async function initialiseDummyData() {
-  console.log("Initializing dummy data...");
-
-  try {
-    const users = ["user1", "user2", "user3"];
-    for (const user of users) {
-      await redisService.hset("users", user, {
-        balance:
-          user === "user1" ? "10000" : user === "user2" ? "20000" : "15000",
-        locked: user === "user2" ? "5000" : user === "user3" ? "2000" : "0",
-      });
-    }
-
-    const orderbook = {
-      BTC_USDT_10_Oct_2024_9_30: {
-        yes: {
-          9.5: {
-            total: "1200",
-            orders: {
-              user1: "200",
-              user2: "1000",
-            },
-          },
-          8.5: {
-            total: "1200",
-            orders: {
-              user1: "300",
-              user2: "300",
-              user3: "600",
-            },
-          },
-        },
-        no: {
-          10.5: {
-            total: "800",
-            orders: {
-              user2: "500",
-              user3: "300",
-            },
-          },
-        },
-      },
-    };
-    await redisService.hset(
-      "orderbook",
-      "BTC_USDT_10_Oct_2024_9_30",
-      orderbook.BTC_USDT_10_Oct_2024_9_30
-    );
-
-    const stockBalances = {
-      user1: {
-        BTC_USDT_10_Oct_2024_9_30: {
-          yes: { quantity: "100", locked: "0" },
-          no: { quantity: "50", locked: "0" },
-        },
-      },
-      user2: {
-        BTC_USDT_10_Oct_2024_9_30: {
-          yes: { quantity: "200", locked: "100" },
-          no: { quantity: "150", locked: "50" },
-        },
-      },
-      user3: {
-        BTC_USDT_10_Oct_2024_9_30: {
-          yes: { quantity: "150", locked: "50" },
-          no: { quantity: "100", locked: "0" },
-        },
-      },
-    };
-    await redisService.hset("stockBalances", "user1", stockBalances.user1);
-    await redisService.hset("stockBalances", "user2", stockBalances.user2);
-    await redisService.hset("stockBalances", "user3", stockBalances.user3);
-
-    console.log("Dummy data initialised successfully");
-  } catch (error) {
-    console.error("Error initializing dummy data:", error);
-    throw error;
+    res.status(400).json({ msg: error.message });
   }
 }
 
@@ -481,9 +330,32 @@ async function checkSufficientBalance(userId, amount) {
   if (!userBalance) {
     throw new Error("User not found");
   }
-  if (new Decimal(userBalance.balance).lt(amount)) {
-    throw new Error("Insufficient INR balance");
+  if (parseInt(userBalance.balance) < amount) {
+    throw new Error("Insufficient balance");
   }
+}
+
+async function updateBalancesAfterMinting(
+  userId,
+  stockSymbol,
+  quantity,
+  totalCost
+) {
+  const userBalance = await redisService.hget("users", userId);
+  userBalance.balance = parseInt(userBalance.balance) - totalCost;
+  await redisService.hset("users", userId, userBalance);
+
+  let stockBalances = (await redisService.hget("stockBalances", userId)) || {};
+  if (!stockBalances[stockSymbol]) {
+    stockBalances[stockSymbol] = {
+      yes: { quantity: 0, locked: 0 },
+      no: { quantity: 0, locked: 0 },
+    };
+  }
+
+  stockBalances[stockSymbol].yes.quantity += quantity;
+  stockBalances[stockSymbol].no.quantity += quantity;
+  await redisService.hset("stockBalances", userId, stockBalances);
 }
 
 async function checkSufficientStockBalance(
@@ -497,59 +369,28 @@ async function checkSufficientStockBalance(
     !stockBalances ||
     !stockBalances[stockSymbol] ||
     !stockBalances[stockSymbol][stockType] ||
-    parseInt(stockBalances[stockSymbol][stockType].quantity) < quantity
+    stockBalances[stockSymbol][stockType].quantity < quantity
   ) {
     throw new Error("Insufficient stock balance");
   }
 }
 
-async function updateOrderbook(stockSymbol, side, price, quantity, userId) {
-  const orderbook = (await redisService.hget("orderbook", stockSymbol)) || {
-    yes: {},
-    no: {},
-  };
-  const priceString = price.toString();
-  if (!orderbook[side][priceString]) {
-    orderbook[side][priceString] = { total: 0, orders: {} };
-  }
-  if (!orderbook[side][priceString].orders[userId]) {
-    orderbook[side][priceString].orders[userId] = 0;
-  }
-  orderbook[side][priceString].total += quantity;
-  orderbook[side][priceString].orders[userId] += quantity;
-  await redisService.hset("orderbook", stockSymbol, orderbook);
-}
-
 async function executeTrade(stockSymbol, price, quantity, yesOrders, noOrders) {
+  const decimalPrice = ensureDecimal(price);
+  const unscaledPrice = unscalePrice(decimalPrice);
   for (const [yesUserId, yesQuantity] of Object.entries(yesOrders)) {
     for (const [noUserId, noQuantity] of Object.entries(noOrders)) {
-      const tradeQuantity = Math.min(
-        parseInt(yesQuantity),
-        parseInt(noQuantity),
-        quantity
-      );
-
+      const tradeQuantity = Math.min(yesQuantity, noQuantity, quantity);
       await updateBalancesAfterTrade(
         yesUserId,
         noUserId,
         stockSymbol,
-        price,
-        tradeQuantity
+        unscaledPrice,
+        tradeQuantity,
+        tradeCost
       );
-
-      yesOrders[yesUserId] = ensureDecimal(yesOrders[yesUserId])
-        .minus(tradeQuantity)
-        .toString();
-      noOrders[noUserId] = ensureDecimal(noOrders[noUserId])
-        .minus(tradeQuantity)
-        .toString();
-      quantity = quantity.minus(tradeQuantity);
-
-      if (ensureDecimal(yesOrders[yesUserId]).eq(0))
-        delete yesOrders[yesUserId];
-      if (ensureDecimal(noOrders[noUserId]).eq(0)) delete noOrders[noUserId];
-
-      if (quantity.eq(0)) return;
+      quantity -= tradeQuantity;
+      if (quantity === 0) return;
     }
   }
 }
@@ -561,85 +402,84 @@ async function updateBalancesAfterTrade(
   price,
   quantity
 ) {
-  const yesUserBalance = await redisService.hget("users", yesUserId);
-  const noUserBalance = await redisService.hget("users", noUserId);
-  const yesStockBalances = await redisService.hget("stockBalances", yesUserId);
-  const noStockBalances = await redisService.hget("stockBalances", noUserId);
+  const [yesUser, noUser] = await Promise.all([
+    redisService.hget("users", yesUserId),
+    redisService.hget("users", noUserId),
+  ]);
 
-  // Update YES user
-  yesUserBalance.locked = ensureDecimal(yesUserBalance.locked)
-    .minus(ensureDecimal(quantity).times(price))
-    .toString();
-  yesStockBalances[stockSymbol].yes.quantity = (
-    parseInt(yesStockBalances[stockSymbol].yes.quantity) + quantity
-  ).toString();
-  yesStockBalances[stockSymbol].yes.locked = (
-    parseInt(yesStockBalances[stockSymbol].yes.locked) - quantity
-  ).toString();
+  const [yesStocks, noStocks] = await Promise.all([
+    redisService.hget("stockBalances", yesUserId),
+    redisService.hget("stockBalances", noUserId),
+  ]);
 
-  // Update NO user
-  noUserBalance.balance = ensureDecimal(noUserBalance.balance)
-    .plus(ensureDecimal(quantity).times(price))
-    .toString();
-  noStockBalances[stockSymbol].no.quantity = (
-    parseInt(noStockBalances[stockSymbol].no.quantity) - quantity
-  ).toString();
-  noStockBalances[stockSymbol].no.locked = (
-    parseInt(noStockBalances[stockSymbol].no.locked) - quantity
-  ).toString();
+  yesUser.locked -= price * quantity;
+  noUser.balance += price * quantity;
 
-  await redisService.hset("users", yesUserId, yesUserBalance);
-  await redisService.hset("users", noUserId, noUserBalance);
-  await redisService.hset("stockBalances", yesUserId, yesStockBalances);
-  await redisService.hset("stockBalances", noUserId, noStockBalances);
-}
+  yesStocks[stockSymbol].yes.quantity += quantity;
+  yesStocks[stockSymbol].yes.locked -= quantity;
+  noStocks[stockSymbol].no.quantity -= quantity;
+  noStocks[stockSymbol].no.locked -= quantity;
 
-function ensureStockBalanceExists(stockBalances, userId, stockSymbol) {
-  if (!stockBalances[userId]) {
-    stockBalances[userId] = {};
-  }
-  if (!stockBalances[userId][stockSymbol]) {
-    stockBalances[userId][stockSymbol] = {
-      yes: { quantity: "0", locked: "0" },
-      no: { quantity: "0", locked: "0" },
-    };
-  }
+  await Promise.all([
+    redisService.hset("users", yesUserId, yesUser),
+    redisService.hset("users", noUserId, noUser),
+    redisService.hset("stockBalances", yesUserId, yesStocks),
+    redisService.hset("stockBalances", noUserId, noStocks),
+  ]);
 }
 
 async function placePendingBuyOrder(
   stockSymbol,
   stockType,
-  decimalPrice,
+  price,
   quantity,
-  userId
+  userId,
+  orderType
 ) {
-  await updateOrderbook(stockSymbol, stockType, decimalPrice, quantity, userId);
+  const orderbook = await redisService.hget("orderbook", stockSymbol);
+  if (!orderbook[stockType][price]) {
+    orderbook[stockType][price] = { total: 0, orders: {} };
+  }
+
+  orderbook[stockType][price].total += quantity;
+  orderbook[stockType][price].orders[userId] = {
+    type: orderType,
+    quantity: quantity,
+  };
+
+  await redisService.hset("orderbook", stockSymbol, orderbook);
+
   const userBalance = await redisService.hget("users", userId);
-  const totalCost = ensureDecimal(quantity).times(decimalPrice);
-  userBalance.balance = ensureDecimal(userBalance.balance)
-    .minus(totalCost)
-    .toString();
-  userBalance.locked = ensureDecimal(userBalance.locked)
-    .plus(totalCost)
-    .toString();
+  const totalCost = quantity * unscalePrice(price);
+  userBalance.balance -= totalCost;
+  userBalance.locked += totalCost;
   await redisService.hset("users", userId, userBalance);
 }
 
 async function placePendingSellOrder(
   stockSymbol,
   stockType,
-  decimalPrice,
+  price,
   quantity,
-  userId
+  userId,
+  orderType
 ) {
-  await updateOrderbook(stockSymbol, stockType, decimalPrice, quantity, userId);
+  const orderbook = await redisService.hget("orderbook", stockSymbol);
+  if (!orderbook[stockType][price]) {
+    orderbook[stockType][price] = { total: 0, orders: {} };
+  }
+
+  orderbook[stockType][price].total += quantity;
+  orderbook[stockType][price].orders[userId] = {
+    type: orderType,
+    quantity: quantity,
+  };
+
+  await redisService.hset("orderbook", stockSymbol, orderbook);
+
   const stockBalances = await redisService.hget("stockBalances", userId);
-  stockBalances[stockSymbol][stockType].quantity = (
-    parseInt(stockBalances[stockSymbol][stockType].quantity) - quantity
-  ).toString();
-  stockBalances[stockSymbol][stockType].locked = (
-    parseInt(stockBalances[stockSymbol][stockType].locked) + quantity
-  ).toString();
+  stockBalances[stockSymbol][stockType].quantity -= quantity;
+  stockBalances[stockSymbol][stockType].locked += quantity;
   await redisService.hset("stockBalances", userId, stockBalances);
 }
 
@@ -651,21 +491,19 @@ async function matchOrders(stockSymbol) {
   const noOrders = orderbook.no;
 
   const yesPrices = Object.keys(yesOrders)
-    .map((price) => ensureDecimal(price))
-    .filter(isValidPrice)
-    .sort((a, b) => b.minus(a).toNumber());
+    .map(Number)
+    .sort((a, b) => b - a);
   const noPrices = Object.keys(noOrders)
-    .map((price) => ensureDecimal(price))
-    .filter(isValidPrice)
-    .sort((a, b) => a.minus(b).toNumber());
+    .map(Number)
+    .sort((a, b) => a - b);
 
   while (yesPrices.length > 0 && noPrices.length > 0) {
     const yesPrice = yesPrices[0];
     const noPrice = noPrices[0];
 
-    if (yesPrice.plus(noPrice).eq(ensureDecimal("10.5"))) {
-      const yesOrder = yesOrders[yesPrice.toString()];
-      const noOrder = noOrders[noPrice.toString()];
+    if (yesPrice + noPrice === 10.5) {
+      const yesOrder = yesOrders[yesPrice];
+      const noOrder = noOrders[noPrice];
 
       const matchQuantity = Math.min(
         parseInt(yesOrder.total),
@@ -680,18 +518,18 @@ async function matchOrders(stockSymbol) {
         noOrder.orders
       );
 
-      yesOrder.total = (parseInt(yesOrder.total) - matchQuantity).toString();
-      noOrder.total = (parseInt(noOrder.total) - matchQuantity).toString();
+      yesOrder.total -= matchQuantity;
+      noOrder.total -= matchQuantity;
 
-      if (parseInt(yesOrder.total) === 0) {
-        delete yesOrders[yesPrice.toString()];
+      if (yesOrder.total === 0) {
+        delete yesOrders[yesPrice];
         yesPrices.shift();
       }
-      if (parseInt(noOrder.total) === 0) {
-        delete noOrders[noPrice.toString()];
+      if (noOrder.total === 0) {
+        delete noOrders[noPrice];
         noPrices.shift();
       }
-    } else if (yesPrice.plus(noPrice).gt(ensureDecimal("10.5"))) {
+    } else if (yesPrice + noPrice > 10.5) {
       noPrices.shift();
     } else {
       yesPrices.shift();
@@ -701,7 +539,7 @@ async function matchOrders(stockSymbol) {
   await redisService.hset("orderbook", stockSymbol, orderbook);
 }
 
-async function updateOrderbookAfterCancel(
+async function cancelExistingOrder(
   stockSymbol,
   stockType,
   price,
@@ -709,25 +547,31 @@ async function updateOrderbookAfterCancel(
   userId
 ) {
   const orderbook = await redisService.hget("orderbook", stockSymbol);
-  const priceString = price.toString();
-  orderbook[stockType][priceString].total = ensureDecimal(
-    orderbook[stockType][priceString].total
-  )
-    .minus(quantity)
-    .toString();
-  orderbook[stockType][priceString].orders[userId] = ensureDecimal(
-    orderbook[stockType][priceString].orders[userId]
-  )
-    .minus(quantity)
-    .toString();
+  if (!orderbook[stockType][price]?.orders[userId]) {
+    throw new Error("Order not found");
+  }
 
-  if (ensureDecimal(orderbook[stockType][priceString].orders[userId]).eq(0)) {
-    delete orderbook[stockType][priceString].orders[userId];
+  const existingOrder = orderbook[stockType][price].orders[userId];
+  const cancelQuantity = Math.min(quantity, existingOrder.quantity);
+
+  orderbook[stockType][price].total -= cancelQuantity;
+  existingOrder.quantity -= cancelQuantity;
+
+  if (existingOrder.quantity === 0) {
+    delete orderbook[stockType][price].orders[userId];
   }
-  if (ensureDecimal(orderbook[stockType][priceString].total).eq(0)) {
-    delete orderbook[stockType][priceString];
+  if (orderbook[stockType][price].total === 0) {
+    delete orderbook[stockType][price];
   }
+
   await redisService.hset("orderbook", stockSymbol, orderbook);
+  await updateBalancesAfterCancel(
+    userId,
+    stockSymbol,
+    stockType,
+    price,
+    cancelQuantity
+  );
 }
 
 async function updateBalancesAfterCancel(
@@ -737,72 +581,153 @@ async function updateBalancesAfterCancel(
   price,
   quantity
 ) {
-  const userBalance = await redisService.hget("users", userId);
-  const stockBalances = await redisService.hget("stockBalances", userId);
-
   if (stockType === "yes") {
-    userBalance.locked = ensureDecimal(userBalance.locked)
-      .minus(quantity.times(price))
-      .toString();
-    userBalance.balance = ensureDecimal(userBalance.balance)
-      .plus(quantity.times(price))
-      .toString();
+    const userBalance = await redisService.hget("users", userId);
+    const unscaledPrice = unscalePrice(price);
+    userBalance.locked -= quantity * unscaledPrice;
+    userBalance.balance += quantity * unscaledPrice;
+    await redisService.hset("users", userId, userBalance);
   } else {
-    stockBalances[stockSymbol][stockType].locked = ensureDecimal(
-      stockBalances[stockSymbol][stockType].locked
-    )
-      .minus(quantity)
-      .toString();
-    stockBalances[stockSymbol][stockType].quantity = ensureDecimal(
-      stockBalances[stockSymbol][stockType].quantity
-    )
-      .plus(quantity)
-      .toString();
+    const stockBalances = await redisService.hget("stockBalances", userId);
+    stockBalances[stockSymbol][stockType].locked -= quantity;
+    stockBalances[stockSymbol][stockType].quantity += quantity;
+    await redisService.hset("stockBalances", userId, stockBalances);
   }
-
-  await redisService.hset("users", userId, userBalance);
-  await redisService.hset("stockBalances", userId, stockBalances);
 }
 
-async function validateMintTokensInput(userId, stockSymbol, quantity, price) {
-  if (!userId || !stockSymbol || !quantity || !price) {
+async function validateMintTokensInput(userId, stockSymbol, quantity) {
+  if (!userId || !stockSymbol || !quantity) {
     throw new Error("Missing required parameters for minting tokens");
   }
-
-  const decimalPrice = ensureDecimal(price);
 
   if (quantity <= 0 || !Number.isInteger(quantity)) {
     throw new Error("Quantity must be a positive integer");
   }
-
-  if (!isValidPrice(decimalPrice)) {
-    throw new Error("Price must be between 1 and 10");
-  }
 }
 
-async function updateBalancesAfterMinting(
-  userId,
-  stockSymbol,
-  quantity,
-  totalCost
-) {
-  const userBalance = await redisService.hget("users", userId);
-  userBalance.balance = ensureDecimal(userBalance.balance)
-    .minus(totalCost)
-    .toString();
-  await redisService.hset("users", userId, userBalance);
+function publishOrderUpdate(stockSymbol, stockType, userId, quantity, price) {
+  redisService.publish("updates", {
+    stockSymbol,
+    [stockType]: {
+      [scalePrice(price)]: {
+        total: quantity,
+        orders: {
+          [userId]: {
+            type: stockType === "yes" ? "reverted" : "sell",
+            quantity: quantity,
+          },
+        },
+      },
+    },
+  });
+}
 
-  let stockBalances = (await redisService.hget("stockBalances", userId)) || {};
-  ensureStockBalanceExists(stockBalances, userId, stockSymbol);
+function publishMintUpdate(userId, stockSymbol, quantity, price) {
+  redisService.publish("updates", {
+    event: "tokensMinted",
+    userId,
+    stockSymbol,
+    quantity,
+    price: scalePrice(price),
+  });
+}
 
-  stockBalances[stockSymbol].yes.quantity = (
-    parseInt(stockBalances[stockSymbol].yes.quantity) + quantity
-  ).toString();
-  stockBalances[stockSymbol].no.quantity = (
-    parseInt(stockBalances[stockSymbol].no.quantity) + quantity
-  ).toString();
+function publishCancelUpdate(userId, stockSymbol, quantity, price, stockType) {
+  redisService.publish("updates", {
+    event: "event_orderbook_update",
+    message: JSON.stringify({
+      stockSymbol,
+      [stockType]: {
+        [scalePrice(price)]: {
+          total: 0,
+          orders: {},
+        },
+      },
+    }),
+  });
+}
 
-  await redisService.hset("stockBalances", userId, stockBalances);
+async function initialiseDummyData() {
+  console.log("Initializing dummy data...");
+
+  try {
+    const users = {
+      user1: { balance: 10000, locked: 0 },
+      user2: { balance: 20000, locked: 5000 },
+      user3: { balance: 15000, locked: 2000 },
+    };
+
+    for (const [userId, balance] of Object.entries(users)) {
+      await redisService.hset("users", userId, balance);
+    }
+
+    const orderbook = {
+      BTC_USDT_10_Oct_2024_9_30: {
+        yes: {
+          9.5: {
+            total: 1200,
+            orders: {
+              user1: { type: "reverted", quantity: 200 },
+              user2: { type: "reverted", quantity: 1000 },
+            },
+          },
+          8.5: {
+            total: 1200,
+            orders: {
+              user1: { type: "reverted", quantity: 300 },
+              user2: { type: "reverted", quantity: 300 },
+              user3: { type: "reverted", quantity: 600 },
+            },
+          },
+        },
+        no: {
+          10.5: {
+            total: 800,
+            orders: {
+              user2: { type: "sell", quantity: 500 },
+              user3: { type: "sell", quantity: 300 },
+            },
+          },
+        },
+      },
+    };
+
+    await redisService.hset(
+      "orderbook",
+      "BTC_USDT_10_Oct_2024_9_30",
+      orderbook.BTC_USDT_10_Oct_2024_9_30
+    );
+
+    const stockBalances = {
+      user1: {
+        BTC_USDT_10_Oct_2024_9_30: {
+          yes: { quantity: 100, locked: 0 },
+          no: { quantity: 50, locked: 0 },
+        },
+      },
+      user2: {
+        BTC_USDT_10_Oct_2024_9_30: {
+          yes: { quantity: 200, locked: 100 },
+          no: { quantity: 150, locked: 50 },
+        },
+      },
+      user3: {
+        BTC_USDT_10_Oct_2024_9_30: {
+          yes: { quantity: 150, locked: 50 },
+          no: { quantity: 100, locked: 0 },
+        },
+      },
+    };
+
+    for (const [userId, balances] of Object.entries(stockBalances)) {
+      await redisService.hset("stockBalances", userId, balances);
+    }
+
+    console.log("Dummy data initialized successfully");
+  } catch (error) {
+    console.error("Error initializing dummy data:", error);
+    throw error;
+  }
 }
 
 module.exports = {
